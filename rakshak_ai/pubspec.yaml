@@ -1,0 +1,85 @@
+name: rakshak_ai
+description: Smart Stress Intelligence - Passive Mental Health Monitoring
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^3.2.1
+
+  # Dependency Injection
+  get_it: ^9.2.1
+
+  # Networking
+  dio: ^5.7.0
+  pretty_dio_logger: ^1.4.0
+
+  # Local Database (Hive CE — compatible with Dart 3.11+)
+  hive_ce: ^2.7.0
+  hive_ce_flutter: ^2.1.0
+  path_provider: ^2.1.5
+
+  # Background Tasks
+  workmanager: ^0.9.0+3
+
+  # Security
+  flutter_secure_storage: ^10.0.0
+  encrypt: ^5.0.3
+  pointycastle: ^3.9.1
+  crypto: ^3.0.6
+  uuid: ^4.5.1
+
+  # Device Integration
+  permission_handler: ^12.0.1
+  device_info_plus: ^12.3.0
+  health: ^13.1.4
+  app_usage: ^4.0.1
+  sensors_plus: ^7.0.0
+  battery_plus: ^7.0.0
+
+  # Notifications
+  flutter_local_notifications: ^21.0.0-dev.1
+  timezone: ^0.11.0
+
+  # Sharing
+  share_plus: ^12.0.1
+
+  # UI/UX
+  fl_chart: ^1.1.1
+  glassmorphism: ^3.0.0
+  shimmer: ^3.0.0
+  lottie: ^3.3.0
+  google_fonts: ^8.0.2
+
+  # Utilities
+  intl: ^0.20.2
+  json_annotation: ^4.9.0
+  logger: ^2.5.0
+  shared_preferences: ^2.3.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Code Generation
+  build_runner: ^2.4.14
+  json_serializable: ^6.9.4
+  hive_ce_generator: ^1.6.0
+
+  # Testing
+  mockito: ^5.4.5
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/animations/
+    - assets/images/
