@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rays-ingress
+  namespace: rays
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.rays.local"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.rays.local
+    secretName: rays-tls-cert
+  rules:
+  - host: api.rays.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: rays-api-service
+            port:
+              number: 80

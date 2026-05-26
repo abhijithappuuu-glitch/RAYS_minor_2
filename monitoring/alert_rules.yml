@@ -1,0 +1,87 @@
+groups:
+  - name: rays_api
+    interval: 30s
+    rules:
+      - alert: APIHighErrorRate
+        expr: rate(flask_http_request_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "API error rate is above 5% (current: {{ $value | humanizePercentage }})"
+
+      - alert: APIPredictionLatencyHigh
+        expr: histogram_quantile(0.95, flask_http_request_duration_seconds_bucket{endpoint="/api/v1/predict"}) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High prediction latency"
+          description: "95th percentile prediction latency is above 1 second (current: {{ $value }}s)"
+
+      - alert: APIRateLimitExceeded
+        expr: rate(flask_http_request_total{status="429"}[1m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limit being exceeded frequently"
+          description: "More than 0.5 requests/sec returning 429 status"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: postgres_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "{{ $value }} connections active (limit: 100)"
+
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis is using {{ $value | humanizePercentage }} of max memory"
+
+      - alert: APIModelNotLoaded
+        expr: flask_model_loaded_status == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ML model failed to load"
+          description: "Stress prediction model is not loaded in memory"
+
+  - name: infrastructure
+    interval: 30s
+    rules:
+      - alert: ContainerDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.job }} is down"
+          description: "The {{ $labels.job }} container has been unreachable for 2 minutes"
+
+      - alert: DiskSpaceLow
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lowerfs|squashfs"} / node_filesystem_size_bytes < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space running low"
+          description: "Only {{ $value | humanizePercentage }} disk space available"
+
+      - alert: MemoryUsageHigh
+        expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage is high"
+          description: "Memory usage is at {{ $value | humanizePercentage }}"
