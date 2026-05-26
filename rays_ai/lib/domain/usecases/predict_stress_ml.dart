@@ -1,8 +1,11 @@
 import 'package:rakshak_ai/domain/entities/stress_score.dart';
 import 'package:rakshak_ai/domain/entities/user_behavior.dart';
-import 'package:rakshak_ai/features/ml_engine/on_device_ml.dart';
 
-/// Use case: Run on-device ML prediction to produce a StressScore
+/// Use case: Predict stress — DEPRECATED
+///
+/// On-device ML scoring has been removed. All predictions are now handled
+/// by the Python backend via StressAnalysisEngine.analyzeStress().
+/// This class is kept as a stub so DI registration doesn't crash.
 class PredictStressML {
   StressScore execute({
     required UserBehavior behavior,
@@ -10,21 +13,12 @@ class PredictStressML {
     int? exerciseMinutes,
     int? restingHeartRate,
   }) {
-    final result = OnDeviceMLEngine.calculateStressScore(
-      socialMinutes: behavior.socialMinutes,
-      lateNightUsage: behavior.lateNightUsage,
-      sleepMinutes: sleepMinutes ?? 0,
-      doomScrollFlag: behavior.doomScrollFlag,
-      pickupCount: behavior.pickupCount,
-      exerciseMinutes: exerciseMinutes,
-      restingHeartRate: restingHeartRate,
-    );
-
+    // Returns a neutral placeholder — not used in the demo flow.
     return StressScore(
-      score: result['stress_score'] as int,
-      riskLevel: result['risk_level'] as String,
-      confidence: result['confidence'] as double,
-      breakdown: result['breakdown'] as Map<String, dynamic>,
+      score: 0,
+      riskLevel: 'low',
+      confidence: 0.0,
+      breakdown: const {},
       timestamp: DateTime.now(),
     );
   }

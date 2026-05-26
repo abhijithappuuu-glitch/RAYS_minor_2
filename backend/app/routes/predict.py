@@ -1,190 +1,178 @@
-from flask import Blueprint, request, jsonify, current_app
-from marshmallow import ValidationError
-from app.schemas.stress_schema import StressPredictSchema, StressPredictResponseSchema
-from app.models.ml_model import StressPredictor
-from app.middleware.auth import require_api_key
-from app import limiter
-from app.database import db
-from app.models.db_models import UserTelemetry
+from flask import Blueprint, jsonify, request, current_app
+import joblib
+import numpy as np
+import os
 
 predict_bp = Blueprint('predict', __name__)
 
-def get_ml_model():
-    """Thread-safe ML model loader using Flask's g context (request-scoped storage)."""
-    from flask import g
-    if 'ml_model' not in g:
-        model_path = current_app.config.get('MODEL_PATH')
-        g.ml_model = StressPredictor(model_path)
-    return g.ml_model
+# ==========================================
+# GLOBAL MEMORY
+# ==========================================
+model = None
+scaler = None
+feature_cols = None
 
-@predict_bp.route('/predict', methods=['POST'])
-@limiter.limit("30 per minute")
-@require_api_key
-def predict_stress():
-    """
-    Predict stress level from behavioral and health data.
-    ---
-    tags:
-      - Predictions
-    security:
-      - ApiKeyAuth: []
-    parameters:
-      - in: header
-        name: X-API-Key
-        type: string
-        required: true
-        description: Valid API key
-      - in: body
-        name: body
-        required: true
-        schema:
-          type: object
-          required:
-            - device_id
-            - social_minutes
-            - late_night_usage
-            - sleep_minutes
-            - doom_scroll_flag
-            - pickup_count
-          properties:
-            device_id:
-              type: string
-              example: device-uuid-12345
-            social_minutes:
-              type: integer
-              minimum: 0
-              maximum: 1440
-              example: 120
-            late_night_usage:
-              type: boolean
-              example: true
-            sleep_minutes:
-              type: integer
-              minimum: 0
-              maximum: 960
-              example: 360
-            doom_scroll_flag:
-              type: boolean
-              example: false
-            pickup_count:
-              type: integer
-              minimum: 0
-              maximum: 500
-              example: 80
-            exercise_minutes:
-              type: integer
-              minimum: 0
-              maximum: 480
-            resting_heart_rate:
-              type: integer
-              minimum: 40
-              maximum: 200
-            hrv_score:
-              type: number
-              minimum: 0
-              maximum: 200
-            total_screen_minutes:
-              type: integer
-              minimum: 0
-              maximum: 1440
-    responses:
-      200:
-        description: Successful prediction
-        schema:
-          type: object
-          properties:
-            stress_score:
-              type: integer
-              example: 65
-            risk_level:
-              type: string
-              enum: [low, medium, high]
-              example: medium
-            confidence:
-              type: number
-              example: 0.92
-            contextual_message:
-              type: string
-              example: You're doom-scrolling late at night...
-            model_version:
-              type: string
-              example: '3.0.0'
-            timestamp:
-              type: string
-              format: date-time
-      400:
-        description: Validation error
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              example: Validation failed
-            details:
-              type: object
-      401:
-        description: Invalid or missing API key
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              example: Invalid API key
-      429:
-        description: Rate limit exceeded
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              example: Rate limit exceeded
-            retry_after:
-              type: integer
-      500:
-        description: Server error
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              example: Prediction failed
-    """
+
+def load_model_assets():
+    global model, scaler, feature_cols
+    if model is not None:
+        return
+
+    model_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        '..', 'models', 'stress_predictor.pkl'
+    )
+    model_path = os.path.normpath(model_path)
+
     try:
-        schema = StressPredictSchema()
-        data = schema.load(request.json)
-
-        model = get_ml_model()
-        result = model.predict(data)
-        
-        # Save telemetry
-        try:
-            telemetry = UserTelemetry(
-                device_id=data['device_id'],
-                sleep_minutes=data.get('sleep_minutes'),
-                total_screen_minutes=data.get('total_screen_minutes'),
-                social_minutes=data.get('social_minutes'),
-                exercise_minutes=data.get('exercise_minutes'),
-                pickup_count=data.get('pickup_count'),
-                resting_heart_rate=data.get('resting_heart_rate'),
-                hrv_score=data.get('hrv_score'),
-                doom_scroll_flag=data.get('doom_scroll_flag'),
-                late_night_usage=data.get('late_night_usage'),
-                predicted_stress_score=result['stress_score'],
-                predicted_risk_level=result['risk_level']
-            )
-            db.session.add(telemetry)
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.error(f"Failed to save telemetry: {e}")
-
-        response_schema = StressPredictResponseSchema()
-        validated_result = response_schema.dump(result)
-
-        return jsonify(validated_result), 200
-
-    except ValidationError as err:
-        return jsonify({'error': 'Validation failed', 'details': err.messages}), 400
+        bundle = joblib.load(model_path)
+        model = bundle['model']
+        scaler = bundle['scaler']
+        feature_cols = bundle.get('feature_cols')
+        print(f"ML Model v{bundle.get('version', '?')} loaded from {model_path}")
     except Exception as e:
-        current_app.logger.error(f'Prediction error: {str(e)}')
-        return jsonify({'error': 'Prediction failed'}), 500
+        print(f"Error loading model: {e}")
+
+
+STRESS_LABELS = {0: "Low", 1: "Medium", 2: "High"}
+
+
+# ==========================================
+# FEATURE ENGINEERING (matches train_model.py)
+# ==========================================
+def build_features(data):
+    """
+    Takes the raw JSON from Flutter and builds the EXACT 25 features
+    that the trained LightGBM model expects.
+    Uses safe defaults so the server never crashes if a field is missing.
+    """
+    # 9 raw features
+    sleep = data.get('sleep_minutes', 420)
+    screen = data.get('total_screen_minutes', data.get('screen_time_minutes', 300))
+    social = data.get('social_minutes', data.get('social_media_usage_minutes', 60))
+    exercise = data.get('exercise_minutes', 30)
+    pickups = data.get('pickup_count', data.get('unlock_count', 50))
+    hr = data.get('resting_heart_rate', data.get('avg_heart_rate', 72))
+    hrv = data.get('hrv_score', 50.0)
+    doom = int(bool(data.get('doom_scroll_flag', False)))
+    late = int(bool(data.get('late_night_usage', False)))
+
+    # Static baselines (in production, these come from DB)
+    bl_sleep = 420
+    bl_screen = 300
+    bl_hr = 72
+    bl_pickups = 80
+    bl_hrv = 50.0
+
+    # Deltas
+    sleep_delta = sleep - bl_sleep
+    screen_delta = screen - bl_screen
+    hr_delta = hr - bl_hr
+    pickup_delta = pickups - bl_pickups
+    hrv_delta = hrv - bl_hrv
+
+    # Ratios
+    screen_sleep_ratio = screen / (sleep + 0.000001)
+    social_screen_ratio = social / (screen + 0.000001)
+
+    # Binary flags
+    low_sleep_flag = 1 if sleep < 360 else 0
+    high_screen_flag = 1 if screen > 420 else 0
+    high_hr_flag = 1 if hr > 85 else 0
+
+    # Composite recovery score
+    recovery_score = exercise + sleep / 10 - screen / 20 + hrv / 10
+
+    # Return as a flat list in the EXACT order train_model.py generates
+    return [
+        sleep, screen, social, exercise, pickups, hr, hrv, doom, late,
+        bl_sleep, bl_screen, bl_hr, bl_pickups, bl_hrv,
+        sleep_delta, screen_delta, hr_delta, pickup_delta, hrv_delta,
+        screen_sleep_ratio, social_screen_ratio,
+        low_sleep_flag, high_screen_flag, high_hr_flag,
+        recovery_score,
+    ]
+
+
+# ==========================================
+# DYNAMIC AI ADVICE ENGINE
+# ==========================================
+def generate_ai_advice(data, stress_level):
+    if stress_level == "Low":
+        return "Your metrics look great! Keep up the good habits and stay consistent."
+
+    screen_time = data.get('total_screen_minutes', data.get('screen_time_minutes', 0))
+    sleep_time = data.get('sleep_minutes', 0)
+    social_media = data.get('social_minutes', data.get('social_media_usage_minutes', 0))
+    hr = data.get('resting_heart_rate', data.get('avg_heart_rate', 0))
+    doom = data.get('doom_scroll_flag', False)
+    late = data.get('late_night_usage', False)
+
+    if doom and late:
+        return "You're doom-scrolling late at night. Put the phone in another room and sleep."
+
+    if screen_time > 300 and sleep_time < 360:
+        return "High screen time is heavily impacting your sleep schedule. Put the phone away 1 hour before bed tonight."
+
+    if social_media > 120:
+        return "Your social media usage is elevated, which correlates with your stress spike. Try a 30-minute digital detox."
+
+    if hr > 85:
+        return "Your average heart rate is elevated today. Take a 5-minute breathing break to physically reset your nervous system."
+
+    if sleep_time < 300:
+        return "Severe sleep deficit detected. Your primary goal today should be resting and getting to bed early."
+
+    if late:
+        return "Late-night phone usage disrupts your circadian rhythm. Try winding down 30 minutes earlier tonight."
+
+    return "Your physiological metrics show elevated stress. Hydrate, take short breaks, and prioritize your workload."
+
+
+# ==========================================
+# THE PREDICTION ENDPOINT
+# ==========================================
+@predict_bp.route('/predict', methods=['POST'])
+def predict_stress():
+    load_model_assets()
+
+    if not model or not scaler:
+        return jsonify({"success": False, "error": "AI Model not initialized"}), 500
+
+    try:
+        data = request.json
+
+        # Build 25 engineered features matching the trained model
+        features = build_features(data)
+        raw_array = np.array([features])
+
+        # Scale and predict
+        scaled_features = scaler.transform(raw_array)
+        prediction_num = int(model.predict(scaled_features)[0])
+        probabilities = model.predict_proba(scaled_features)[0]
+        confidence = float(max(probabilities))
+
+        # Score: probability-weighted 0-100
+        stress_score = int(probabilities[0] * 0 + probabilities[1] * 50 + probabilities[2] * 100)
+        stress_score = max(0, min(100, stress_score))
+
+        # Label and advice
+        stress_level_text = STRESS_LABELS.get(prediction_num, "Medium")
+        ai_advice = generate_ai_advice(data, stress_level_text)
+
+        return jsonify({
+            "success": True,
+            "stress_level": stress_level_text,
+            "stress_score": stress_score,
+            "risk_level": stress_level_text.lower(),
+            "confidence": round(confidence, 3),
+            "ai_advice": ai_advice,
+            "contextual_message": ai_advice,
+            "model_version": "3.0.0"
+        }), 200
+
+    except Exception as e:
+        print(f"Prediction Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 400

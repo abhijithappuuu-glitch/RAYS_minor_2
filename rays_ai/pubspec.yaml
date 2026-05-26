@@ -19,6 +19,7 @@ dependencies:
   # Networking
   dio: ^5.7.0
   pretty_dio_logger: ^1.4.0
+  http: ^1.2.1
 
   # Local Database (Hive CE — compatible with Dart 3.11+)
   hive_ce: ^2.7.0

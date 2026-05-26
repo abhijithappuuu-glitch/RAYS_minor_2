@@ -25,6 +25,29 @@ class DashboardScreen extends ConsumerStatefulWidget {
 class _DashboardScreenState extends ConsumerState<DashboardScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _pulseController;
+  bool _isLoading = false;
+
+  Future<void> _runAnalysis() async {
+    setState(() => _isLoading = true);
+    
+    await ref.read(scanProvider.notifier).startScan();
+    
+    if (mounted) {
+      setState(() => _isLoading = false);
+      
+      final scan = ref.read(scanProvider);
+      if (scan.scanError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Network timeout: Could not reach AI Engine. Please check connection."),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -45,16 +68,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   Widget build(BuildContext context) {
     final scan = ref.watch(scanProvider);
     final profile = ref.watch(userProfileProvider);
-
-    // Listen for questionnaire trigger
-    ref.listen<ScanState>(scanProvider, (prev, next) {
-      if (next.scanStatus == 'questionnaire' &&
-          prev?.scanStatus != 'questionnaire') {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _showQuestionnaire(context);
-        });
-      }
-    });
 
     return Scaffold(
       backgroundColor: AppTheme.backgroundDark,
@@ -185,14 +198,16 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
               width: double.infinity,
               height: 56,
               child: ElevatedButton.icon(
-                onPressed: () {
-                  ref.read(scanProvider.notifier).startScan();
-                },
-                icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                label: const Text(
-                  'Start Scan',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                onPressed: _isLoading ? null : _runAnalysis,
+                icon: _isLoading 
+                    ? const SizedBox.shrink()
+                    : const Icon(Icons.play_arrow_rounded, size: 28),
+                label: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                    : const Text(
+                        'Scan / Analyze',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryCyan,
                   foregroundColor: Colors.black,
@@ -340,9 +355,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                         Row(
                           children: [
                             IconButton(
-                              onPressed: () {
-                                ref.read(scanProvider.notifier).startScan();
-                              },
+                              onPressed: _isLoading ? null : _runAnalysis,
                               icon: const Icon(Icons.refresh_rounded),
                               color: AppTheme.primaryCyan,
                               tooltip: 'Rescan',
@@ -534,6 +547,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                       onTap: () => Navigator.of(context).push(
                         AppPageRoute(
                           builder: (_) => AdviceScreen(
+                            analysis: analysis,
                             stressScore: stressScore,
                             riskLevel: riskLevel,
                           ),
@@ -597,14 +611,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
                       const SizedBox(height: 10),
                       _buildBreakdownRow(
                         'Mobile Usage',
-                        analysis.usageScore,
+                        analysis.usageScore > 0 ? analysis.usageScore : null,
                         AppTheme.riskMedium,
                         '30%',
                       ),
                       const SizedBox(height: 10),
                       _buildBreakdownRow(
                         'Fitness Data',
-                        analysis.fitnessScore,
+                        analysis.fitnessScore > 0 ? analysis.fitnessScore : null,
                         AppTheme.primaryCyan,
                         '30%',
                       ),
@@ -757,9 +771,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
             displayMsg,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 15,
+              fontSize: 16,
               height: 1.4,
-              letterSpacing: 0.2,
               fontWeight: FontWeight.w500,
             ),
           ),

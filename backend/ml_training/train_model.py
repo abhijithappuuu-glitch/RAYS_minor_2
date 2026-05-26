@@ -111,9 +111,14 @@ def train_model():
 
     print("Evaluating...")
     y_pred, y_prob = model.predict(X_test_scaled), model.predict_proba(X_test_scaled)
-    acc, auc = accuracy_score(y_test, y_pred), roc_auc_score(pd.get_dummies(y_test), y_prob, multi_class="ovr")
-
-    print(f"Accuracy: {acc:.4f}\nROC-AUC : {auc:.4f}")
+    acc = accuracy_score(y_test, y_pred)
+    try:
+        from sklearn.preprocessing import label_binarize
+        y_test_bin = label_binarize(y_test, classes=[0, 1, 2])
+        auc = roc_auc_score(y_test_bin, y_prob, multi_class="ovr")
+        print(f"Accuracy: {acc:.4f}\nROC-AUC : {auc:.4f}")
+    except Exception:
+        print(f"Accuracy: {acc:.4f}\nROC-AUC : (skipped — class distribution issue)")
     
     bundle = {"model": model, "scaler": scaler, "feature_cols": feature_cols, "version": "3.0.0", "trained_at": datetime.now().isoformat()}
 

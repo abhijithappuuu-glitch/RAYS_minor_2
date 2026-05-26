@@ -4,14 +4,14 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:rakshak_ai/core/theme/app_theme.dart';
 import 'package:rakshak_ai/presentation/widgets/glassmorphic_card.dart';
 import 'package:rakshak_ai/presentation/widgets/app_page_route.dart';
-import 'package:rakshak_ai/presentation/providers/stress_provider.dart';
+import 'package:rakshak_ai/presentation/providers/scan_provider.dart';
 
 class InsightsScreen extends ConsumerWidget {
   const InsightsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final historyAsync = ref.watch(stressHistoryProvider(7));
+    final scanState = ref.watch(scanProvider);
 
     return Scaffold(
       backgroundColor: AppTheme.backgroundDark,
@@ -34,7 +34,7 @@ class InsightsScreen extends ConsumerWidget {
                 children: [
                   Text('Weekly Stress Trends', style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: AppTheme.spacingM),
-                  _buildWeeklyHeatmap(historyAsync),
+                  _buildWeeklyHeatmap(scanState.history),
                 ],
               ),
             ),
@@ -66,7 +66,7 @@ class InsightsScreen extends ConsumerWidget {
                 children: [
                   Text('Screen Time Breakdown', style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: AppTheme.spacingM),
-                  _buildScreenTimeBreakdown(),
+                  _buildScreenTimeBreakdown(scanState.lastScan),
                 ],
               ),
             ),
@@ -82,7 +82,7 @@ class InsightsScreen extends ConsumerWidget {
                 children: [
                   Text('Late Night Activity', style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: AppTheme.spacingM),
-                  _buildLateNightWarnings(),
+                  _buildLateNightWarnings(scanState.lastScan),
                 ],
               ),
             ),
@@ -92,25 +92,21 @@ class InsightsScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildWeeklyHeatmap(AsyncValue historyAsync) {
-    // Build spots from real history data or fallback
-    final List<FlSpot> spots = historyAsync.when(
-      data: (history) {
-        if (history.isEmpty) {
-          return List.generate(7, (i) => FlSpot(i.toDouble(), 0));
+  Widget _buildWeeklyHeatmap(List<ScanResult> history) {
+    final List<FlSpot> spots;
+    if (history.isEmpty) {
+      spots = List.generate(7, (i) => FlSpot(i.toDouble(), 0));
+    } else {
+      // Get the 7 most recent scans (or fewer), reversed so oldest is first
+      final recent = history.take(7).toList().reversed.toList();
+      spots = List.generate(7, (i) {
+        if (i < recent.length) {
+          final score = recent[i].analysis?.overallScore ?? 0;
+          return FlSpot(i.toDouble(), score.toDouble());
         }
-        // Take last 7 entries, pad if fewer
-        final recent = history.length > 7 ? history.sublist(history.length - 7) : history;
-        return List.generate(7, (i) {
-          if (i < recent.length) {
-            return FlSpot(i.toDouble(), recent[i].score.toDouble());
-          }
-          return FlSpot(i.toDouble(), 0);
-        });
-      },
-      loading: () => List.generate(7, (i) => FlSpot(i.toDouble(), 0)),
-      error: (_, __) => List.generate(7, (i) => FlSpot(i.toDouble(), 0)),
-    );
+        return FlSpot(i.toDouble(), 0);
+      });
+    }
 
     return GlassmorphicCard(
       height: 250,
@@ -237,7 +233,19 @@ class InsightsScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildScreenTimeBreakdown() {
+  Widget _buildScreenTimeBreakdown(ScanResult? lastScan) {
+    final screenMins = lastScan?.usage.totalScreenMinutes ?? 0;
+    final socialMins = lastScan?.usage.socialMinutes ?? 0;
+
+    double socialPct = 35.0;
+    double prodPct = 20.0;
+    double otherPct = 45.0;
+
+    if (screenMins > 0) {
+      socialPct = (socialMins / screenMins) * 100;
+      otherPct = 100 - socialPct - prodPct;
+      if (otherPct < 0) otherPct = 5.0;
+    }
     return GlassmorphicCard(
       height: 200,
       child: Row(
@@ -247,26 +255,26 @@ class InsightsScreen extends ConsumerWidget {
               PieChartData(
                 sections: [
                   PieChartSectionData(
-                    value: 35,
-                    title: '35%',
+                    value: socialPct,
+                    title: '${socialPct.toInt()}%',
                     color: AppTheme.riskHigh,
                     radius: 60,
                   ),
                   PieChartSectionData(
-                    value: 25,
-                    title: '25%',
+                    value: otherPct * 0.4,
+                    title: '${(otherPct * 0.4).toInt()}%',
                     color: AppTheme.riskMedium,
                     radius: 60,
                   ),
                   PieChartSectionData(
-                    value: 20,
-                    title: '20%',
+                    value: prodPct,
+                    title: '${prodPct.toInt()}%',
                     color: AppTheme.primaryGold,
                     radius: 60,
                   ),
                   PieChartSectionData(
-                    value: 20,
-                    title: '20%',
+                    value: otherPct * 0.6,
+                    title: '${(otherPct * 0.6).toInt()}%',
                     color: AppTheme.riskLow,
                     radius: 60,
                   ),
@@ -318,7 +326,48 @@ class InsightsScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildLateNightWarnings() {
+  Widget _buildLateNightWarnings(ScanResult? lastScan) {
+    final hasLateNight = lastScan?.usage.lateNightUsage ?? false;
+    
+    if (!hasLateNight) {
+      return GlassmorphicCard(
+        borderColor: AppTheme.riskLow.withOpacity(0.3),
+        child: const Column(
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.check_circle_outline,
+                  color: AppTheme.riskLow,
+                  size: 24,
+                ),
+                SizedBox(width: AppTheme.spacingM),
+                Expanded(
+                  child: Text(
+                    'No late-night activity',
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: AppTheme.spacingM),
+            Text(
+              'Great job putting the phone away! This significantly improves sleep quality and reduces morning cortisol.',
+              style: TextStyle(
+                color: AppTheme.textSecondary,
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return GlassmorphicCard(
       borderColor: AppTheme.riskHigh.withOpacity(0.3),
       child: const Column(
@@ -333,7 +382,7 @@ class InsightsScreen extends ConsumerWidget {
               SizedBox(width: AppTheme.spacingM),
               Expanded(
                 child: Text(
-                  '3 late-night sessions this week',
+                  'Late-night session detected',
                   style: TextStyle(
                     color: AppTheme.textPrimary,
                     fontSize: 16,

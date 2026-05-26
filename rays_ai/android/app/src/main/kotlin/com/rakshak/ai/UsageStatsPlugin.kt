@@ -101,14 +101,11 @@ class UsageStatsPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         
         val calendar = Calendar.getInstance()
         val endTime = calendar.timeInMillis
-        calendar.add(Calendar.DAY_OF_YEAR, -1) // Last 24 hours
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
         val startTime = calendar.timeInMillis
-
-        val usageStats = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_DAILY,
-            startTime,
-            endTime
-        )
 
         // Indian social media apps categorization
         val socialApps = setOf(
@@ -133,23 +130,50 @@ class UsageStatsPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         var doomScrollFlag = false
         var longestSocialSession = 0L
 
-        usageStats?.forEach { stat ->
-            totalScreenTime += stat.totalTimeInForeground
+        val events = usageStatsManager.queryEvents(startTime, endTime)
+        val event = android.app.usage.UsageEvents.Event()
+        
+        val appStartTimes = mutableMapOf<String, Long>()
 
-            if (socialApps.contains(stat.packageName)) {
-                socialMediaTime += stat.totalTimeInForeground
-                longestSocialSession = max(longestSocialSession, stat.totalTimeInForeground)
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+
+            val packageName = event.packageName
+            val eventType = event.eventType
+            val time = event.timeStamp
+
+            // Precise device unlocks (pickup count)
+            if (eventType == android.app.usage.UsageEvents.Event.KEYGUARD_HIDDEN || 
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH && eventType == android.app.usage.UsageEvents.Event.SCREEN_INTERACTIVE)) {
+                // To avoid double counting interactive and keyguard events, we can just track interactive
+                if (eventType == android.app.usage.UsageEvents.Event.KEYGUARD_HIDDEN) {
+                    pickupCount++
+                }
             }
 
-            // Estimate pickups from app launch count
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // This is approximate
-                pickupCount += 1
-            }
+            if (eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
+                appStartTimes[packageName] = time
+            } else if (eventType == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED || 
+                       eventType == android.app.usage.UsageEvents.Event.ACTIVITY_STOPPED) {
+                
+                val start = appStartTimes[packageName]
+                if (start != null) {
+                    val duration = time - start
+                    if (duration > 0) {
+                        totalScreenTime += duration
+                        
+                        if (socialApps.contains(packageName)) {
+                            socialMediaTime += duration
+                            longestSocialSession = max(longestSocialSession, duration)
+                        }
 
-            // Check for late-night usage (12 AM - 4 AM)
-            if (stat.lastTimeUsed in getLateNightRange()) {
-                lateNightUsage = true
+                        // Check for late-night usage (12 AM - 4 AM)
+                        if (time in getLateNightRange()) {
+                            lateNightUsage = true
+                        }
+                    }
+                    appStartTimes.remove(packageName)
+                }
             }
         }
 

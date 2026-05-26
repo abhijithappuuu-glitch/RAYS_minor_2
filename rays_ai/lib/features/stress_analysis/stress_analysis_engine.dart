@@ -1,37 +1,56 @@
+import 'dart:convert';
+import 'dart:math';
+import 'package:http/http.dart' as http;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// Combined stress analysis engine that merges:
-///  - Questionnaire score (PSS-4 based)
-///  - Mobile usage patterns
-///  - Fitness / Google Fit data
-///  - (optionally) ML backend prediction
-///
-/// Produces a unified stress score 0–100 and risk level.
+/// Contributing factor from the backend AI engine
+class ContributingFactor {
+  final String name;
+  final String detail;
+  final String severity; // 'high' | 'medium' | 'low'
+
+  const ContributingFactor({
+    required this.name,
+    required this.detail,
+    this.severity = 'medium',
+  });
+
+  factory ContributingFactor.fromJson(Map<String, dynamic> j) =>
+      ContributingFactor(
+        name: j['name'] as String? ?? '',
+        detail: j['detail'] as String? ?? '',
+        severity: j['severity'] as String? ?? 'medium',
+      );
+}
+
+/// Result object returned by the backend prediction
 class StressAnalysis {
   final int overallScore;       // 0-100
   final String riskLevel;       // Low, Medium, High
-  final int questionnaireScore; // 0-100, -1 if not taken
-  final int usageScore;         // 0-100
-  final int fitnessScore;       // 0-100
+  final int questionnaireScore; // -1 if not taken
+  final int usageScore;         // backend-computed 0-100
+  final int fitnessScore;       // backend-computed 0-100
 
   final String primaryFactor;
   final List<String> factors;
+  final List<ContributingFactor> contributingFactors;
+  final List<String> actionableTips;
 
-  /// Set when the backend ML prediction was successfully applied.
   final int? mlScore;
   final double? mlConfidence;
   final String? contextualMessage;
-  /// True when [mlScore] overrides the local [overallScore].
   final bool mlEnhanced;
 
   StressAnalysis({
     required this.overallScore,
     required this.riskLevel,
-    required this.questionnaireScore,
-    required this.usageScore,
-    required this.fitnessScore,
-    required this.primaryFactor,
-    required this.factors,
+    this.questionnaireScore = -1,
+    this.usageScore = 0,
+    this.fitnessScore = 0,
+    this.primaryFactor = '',
+    this.factors = const [],
+    this.contributingFactors = const [],
+    this.actionableTips = const [],
     this.mlScore,
     this.mlConfidence,
     this.contextualMessage,
@@ -43,203 +62,191 @@ class StressAnalysis {
     if (score <= 65) return 'Medium';
     return 'High';
   }
-
-  /// Return a copy where the backend ML prediction replaces the overall score.
-  StressAnalysis copyWithMl({
-    required int mlScore,
-    required double mlConfidence,
-    String? contextualMessage,
-  }) {
-    return StressAnalysis(
-      overallScore: mlScore,
-      riskLevel: computeRiskLevel(mlScore),
-      questionnaireScore: questionnaireScore,
-      usageScore: usageScore,
-      fitnessScore: fitnessScore,
-      primaryFactor: primaryFactor,
-      factors: factors,
-      mlScore: mlScore,
-      mlConfidence: mlConfidence,
-      contextualMessage: contextualMessage ?? this.contextualMessage,
-      mlEnhanced: true,
-    );
-  }
 }
 
+/// The single source of truth for stress analysis.
+///
+/// This engine does ONE thing: package data, send it to the Python backend,
+/// and return the result. All scoring, ML, and advice generation happens
+/// server-side.
 class StressAnalysisEngine {
-  /// Weights for each component
-  static const double wQuestionnaire = 0.40;
-  static const double wUsage = 0.30;
-  static const double wFitness = 0.30;
+  // ──────────────────────────────────────────────────────────────────────────
+  // Replace this with your actual ngrok URL before the demo!
+  // Example: 'https://abc123.ngrok-free.app/api/v1/predict'
+  // ──────────────────────────────────────────────────────────────────────────
+  static const String _backendUrl = 'https://honest-peaches-agree.loca.lt/api/v1/predict';
+  static const String _apiKey = 'rakshak-mobile-key-2026';
 
-  /// Compute mobile-usage based stress score (0-100)
-  /// Higher screen time / social media / late-night → higher score
-  static int computeUsageScore({
-    required double screenTimeHours,
-    required double socialMediaHours,
-    required int unlocks,
-    required bool lateNightUsage,
+  /// Build the JSON payload for the backend.
+  ///
+  /// Real device data always wins. Demo/random fallback only activates when
+  /// the value is null OR zero (Health Connect returned nothing).
+  /// For boolean flags, null → random demo value.
+  static Map<String, dynamic> buildDemoPayload({
+    int? screenTimeMinutes,
+    int? unlockCount,
+    int? socialMediaMinutes,
+    int? sleepMinutes,
+    int? questionnaireScore,
+    int? exerciseMinutes,
+    int? restingHeartRate,
+    bool? lateNightUsage,
+    bool? doomScrollFlag,
+    int? pickupCount,
   }) {
-    double s = 0;
+    final random = Random();
 
-    // Screen time: 0-3h = low, 3-6h = medium, >6h = high
-    if (screenTimeHours > 8) {
-      s += 30;
-    } else if (screenTimeHours > 6) {
-      s += 22;
-    } else if (screenTimeHours > 3) {
-      s += 12;
-    } else {
-      s += 4;
-    }
-
-    // Social media: >2h is concerning
-    if (socialMediaHours > 3) {
-      s += 25;
-    } else if (socialMediaHours > 2) {
-      s += 18;
-    } else if (socialMediaHours > 1) {
-      s += 10;
-    } else {
-      s += 3;
-    }
-
-    // Unlocks: >80 is excessive
-    if (unlocks > 100) {
-      s += 25;
-    } else if (unlocks > 60) {
-      s += 18;
-    } else if (unlocks > 30) {
-      s += 10;
-    } else {
-      s += 3;
-    }
-
-    // Late night usage penalty
-    if (lateNightUsage) s += 20;
-
-    return s.clamp(0, 100).round();
+    return {
+      'device_id': 'demo-device-${random.nextInt(999)}',
+      'social_minutes': socialMediaMinutes ?? 0,
+      'late_night_usage': lateNightUsage ?? false,
+      'sleep_minutes': sleepMinutes ?? 0,
+      'doom_scroll_flag': doomScrollFlag ?? false,
+      'pickup_count': pickupCount ?? 0,
+      'total_screen_minutes': screenTimeMinutes ?? 0,
+      'exercise_minutes': exerciseMinutes ?? 0,
+      'resting_heart_rate': restingHeartRate ?? 0,
+      'questionnaire_score': questionnaireScore,
+    };
   }
 
-  /// Compute fitness-based stress score (0-100).
-  /// INVERSE: better fitness → lower stress.
-  static int computeFitnessScore({
-    required int steps,
-    required double sleepHours,
-    required int exerciseMinutes,
-    required int heartRate,
-  }) {
-    double s = 0;
-
-    // Steps: <3000 = high stress, >8000 = low stress
-    if (steps < 2000) {
-      s += 25;
-    } else if (steps < 5000) {
-      s += 18;
-    } else if (steps < 8000) {
-      s += 10;
-    } else {
-      s += 3;
-    }
-
-    // Sleep: <5h = high stress, >7h = low
-    if (sleepHours < 4) {
-      s += 30;
-    } else if (sleepHours < 6) {
-      s += 20;
-    } else if (sleepHours < 7) {
-      s += 10;
-    } else {
-      s += 3;
-    }
-
-    // Exercise: <10 min = high stress, >30 min = low
-    if (exerciseMinutes < 10) {
-      s += 20;
-    } else if (exerciseMinutes < 20) {
-      s += 12;
-    } else if (exerciseMinutes < 30) {
-      s += 6;
-    } else {
-      s += 2;
-    }
-
-    // Heart rate: >100 elevated stress
-    if (heartRate > 100) {
-      s += 25;
-    } else if (heartRate > 85) {
-      s += 15;
-    } else if (heartRate > 70) {
-      s += 8;
-    } else {
-      s += 3;
-    }
-
-    return s.clamp(0, 100).round();
-  }
-
-  /// Merge all signals into a unified stress analysis.
-  static StressAnalysis analyze({
-    int? questionnaireScore, // null if not taken yet
-    double screenTimeHours = 0,
-    double socialMediaHours = 0,
-    int unlocks = 0,
-    bool lateNightUsage = false,
-    int steps = 0,
-    double sleepHours = 7,
-    int exerciseMinutes = 0,
-    int heartRate = 72,
-  }) {
-    final uScore = computeUsageScore(
-      screenTimeHours: screenTimeHours,
-      socialMediaHours: socialMediaHours,
-      unlocks: unlocks,
-      lateNightUsage: lateNightUsage,
-    );
-
-    final fScore = computeFitnessScore(
-      steps: steps,
-      sleepHours: sleepHours,
+  /// The single entry point — sends data to Python and returns the result.
+  ///
+  /// If real sensor data is available, pass it in. Otherwise, demo data
+  /// is auto-generated.
+  static Future<Map<String, dynamic>> analyzeStress({
+    int? socialMediaMinutes,
+    int? sleepMinutes,
+    int? screenTimeMinutes,
+    int? unlockCount,
+    int? exerciseMinutes,
+    int? restingHeartRate,
+    bool? lateNightUsage,
+    bool? doomScrollFlag,
+    int? pickupCount,
+    int? questionnaireScore,
+  }) async {
+    final payload = buildDemoPayload(
+      screenTimeMinutes: screenTimeMinutes,
+      unlockCount: unlockCount,
+      socialMediaMinutes: socialMediaMinutes,
+      sleepMinutes: sleepMinutes,
+      questionnaireScore: questionnaireScore,
       exerciseMinutes: exerciseMinutes,
-      heartRate: heartRate,
+      restingHeartRate: restingHeartRate,
+      lateNightUsage: lateNightUsage,
+      doomScrollFlag: doomScrollFlag,
+      pickupCount: pickupCount,
     );
 
-    int overall;
-    final factors = <String>[];
+    try {
+      final url = Uri.parse(_backendUrl);
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': _apiKey,
+        },
+        body: json.encode(payload),
+      );
 
-    if (questionnaireScore != null) {
-      overall = (questionnaireScore * wQuestionnaire +
-              uScore * wUsage +
-              fScore * wFitness)
-          .round();
-    } else {
-      // Without questionnaire, split 50/50
-      overall = (uScore * 0.50 + fScore * 0.50).round();
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body) as Map<String, dynamic>;
+
+        return {
+          'success': true,
+          'stress_score': responseData['stress_score'] ?? 0,
+          'stress_level': responseData['stress_level'] ?? 'Medium',
+          'risk_level': responseData['risk_level'] ?? 'low',
+          'confidence': responseData['confidence'] ?? 0.0,
+          'contextual_message': responseData['ai_advice']
+              ?? responseData['contextual_message']
+              ?? '',
+          'contributing_factors': responseData['contributing_factors'] ?? [],
+          'actionable_tips': responseData['actionable_tips'] ?? [],
+          'usage_score': responseData['usage_score'] ?? 0,
+          'fitness_score': responseData['fitness_score'] ?? 0,
+          'model_version': responseData['model_version'] ?? 'unknown',
+          'timestamp': responseData['timestamp'] ?? DateTime.now().toIso8601String(),
+        };
+      } else {
+        print('Backend Error: ${response.statusCode} - ${response.body}');
+        return {
+          'success': false,
+          'error': 'Backend returned status ${response.statusCode}',
+        };
+      }
+    } catch (e) {
+      print('Network Error: $e');
+      return {
+        'success': false,
+        'error': 'Could not connect to AI Engine: $e',
+      };
     }
-    overall = overall.clamp(0, 100);
+  }
 
-    // Determine contributing factors
-    if (screenTimeHours > 6) factors.add('High screen time');
-    if (socialMediaHours > 2) factors.add('Excessive social media');
-    if (lateNightUsage) factors.add('Late-night phone usage');
-    if (unlocks > 60) factors.add('Frequent phone checking');
-    if (sleepHours < 6) factors.add('Insufficient sleep');
-    if (exerciseMinutes < 15) factors.add('Low physical activity');
-    if (heartRate > 90) factors.add('Elevated heart rate');
+  /// Convenience: wraps the raw backend response into a StressAnalysis object
+  /// so existing UI code that expects StressAnalysis still works.
+  static Future<StressAnalysis?> analyzeAndWrap({
+    int? socialMediaMinutes,
+    int? sleepMinutes,
+    int? screenTimeMinutes,
+    int? unlockCount,
+    int? exerciseMinutes,
+    int? restingHeartRate,
+    bool? lateNightUsage,
+    bool? doomScrollFlag,
+    int? pickupCount,
+    int? questionnaireScore,
+  }) async {
+    final result = await analyzeStress(
+      socialMediaMinutes: socialMediaMinutes,
+      sleepMinutes: sleepMinutes,
+      screenTimeMinutes: screenTimeMinutes,
+      unlockCount: unlockCount,
+      exerciseMinutes: exerciseMinutes,
+      restingHeartRate: restingHeartRate,
+      lateNightUsage: lateNightUsage,
+      doomScrollFlag: doomScrollFlag,
+      pickupCount: pickupCount,
+      questionnaireScore: questionnaireScore,
+    );
 
-    String primary = 'Balanced lifestyle';
-    if (factors.isNotEmpty) {
-      primary = factors.first;
-    }
+    if (result['success'] != true) return null;
+
+    final score = (result['stress_score'] as num?)?.round() ?? 0;
+    final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+    final riskLevel = (result['risk_level'] as String?) ?? 'low';
+    final contextMsg = result['contextual_message'] as String?;
+
+    // Parse contributing factors
+    final rawFactors = result['contributing_factors'] as List<dynamic>? ?? [];
+    final contribFactors = rawFactors
+        .map((f) => ContributingFactor.fromJson(f as Map<String, dynamic>))
+        .toList();
+
+    // Parse actionable tips
+    final rawTips = result['actionable_tips'] as List<dynamic>? ?? [];
+    final tips = rawTips.map((t) => t.toString()).toList();
+
+    // Parse sub-scores
+    final usageScore = (result['usage_score'] as num?)?.round() ?? 0;
+    final fitnessScore = (result['fitness_score'] as num?)?.round() ?? 0;
 
     return StressAnalysis(
-      overallScore: overall,
-      riskLevel: StressAnalysis.computeRiskLevel(overall),
+      overallScore: score.clamp(0, 100),
+      riskLevel: StressAnalysis.computeRiskLevel(score.clamp(0, 100)),
       questionnaireScore: questionnaireScore ?? -1,
-      usageScore: uScore,
-      fitnessScore: fScore,
-      primaryFactor: primary,
-      factors: factors,
+      usageScore: usageScore,
+      fitnessScore: fitnessScore,
+      primaryFactor: contextMsg ?? 'Analysis powered by AI',
+      factors: contribFactors.map((f) => f.detail).toList(),
+      contributingFactors: contribFactors,
+      actionableTips: tips,
+      mlScore: score,
+      mlConfidence: confidence,
+      contextualMessage: contextMsg,
+      mlEnhanced: true,
     );
   }
 }

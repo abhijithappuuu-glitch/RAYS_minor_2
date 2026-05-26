@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rakshak_ai/core/di/injection.dart';
-import 'package:rakshak_ai/data/datasources/remote/stress_api_service.dart';
 import 'package:rakshak_ai/domain/entities/user_behavior.dart';
 import 'package:rakshak_ai/domain/repositories/usage_repository.dart';
 import 'package:rakshak_ai/domain/repositories/health_repository.dart';
@@ -79,6 +78,19 @@ class ScanResult {
         'calories': fitness.caloriesBurned,
         'water': fitness.waterGlasses,
         if (questionnaireScore != null) 'qScore': questionnaireScore,
+        // Persist backend analysis results
+        if (analysis != null) ...{
+          'analysisScore': analysis!.overallScore,
+          'analysisRisk': analysis!.riskLevel,
+          'analysisMsg': analysis!.contextualMessage ?? '',
+          'analysisConfidence': analysis!.mlConfidence ?? 0.0,
+          'analysisMlEnhanced': analysis!.mlEnhanced,
+          'usageScore': analysis!.usageScore,
+          'fitnessScore': analysis!.fitnessScore,
+          'factors': analysis!.factors,
+          'contributingFactors': analysis!.contributingFactors.map((f) => {'name': f.name, 'detail': f.detail, 'severity': f.severity}).toList(),
+          'actionableTips': analysis!.actionableTips,
+        },
       };
 
   factory ScanResult.fromJson(Map<String, dynamic> j) {
@@ -100,17 +112,33 @@ class ScanResult {
       waterGlasses: (j['water'] as int?) ?? 0,
     );
     final qScore = j['qScore'] as int?;
-    final analysis = StressAnalysisEngine.analyze(
-      questionnaireScore: qScore,
-      screenTimeHours: usage.totalScreenMinutes / 60.0,
-      socialMediaHours: usage.socialMinutes / 60.0,
-      unlocks: usage.pickupCount,
-      lateNightUsage: usage.lateNightUsage,
-      steps: fitness.steps,
-      sleepHours: fitness.sleepHours,
-      exerciseMinutes: fitness.exerciseMinutes,
-      heartRate: fitness.heartRate,
-    );
+
+    // Restore persisted backend analysis (no local recalculation)
+    StressAnalysis? analysis;
+    if (j['analysisScore'] != null) {
+      final score = (j['analysisScore'] as num).round();
+      final rawFactors = j['contributingFactors'] as List<dynamic>? ?? [];
+      final contribFactors = rawFactors
+          .map((f) => ContributingFactor.fromJson(f as Map<String, dynamic>))
+          .toList();
+      
+      analysis = StressAnalysis(
+        overallScore: score,
+        riskLevel: StressAnalysis.computeRiskLevel(score),
+        questionnaireScore: qScore ?? -1,
+        usageScore: (j['usageScore'] as num?)?.round() ?? 0,
+        fitnessScore: (j['fitnessScore'] as num?)?.round() ?? 0,
+        primaryFactor: (j['analysisMsg'] as String?) ?? '',
+        factors: (j['factors'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+        contributingFactors: contribFactors,
+        actionableTips: (j['actionableTips'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [],
+        mlScore: score,
+        mlConfidence: (j['analysisConfidence'] as num?)?.toDouble() ?? 0.0,
+        contextualMessage: (j['analysisMsg'] as String?) ?? '',
+        mlEnhanced: (j['analysisMlEnhanced'] as bool?) ?? true,
+      );
+    }
+
     return ScanResult(
       usage: usage,
       fitness: fitness,
@@ -201,7 +229,7 @@ class ScanNotifier extends Notifier<ScanState> {
     );
   }
 
-  // ── Main Scan — Real device data only ────────────────────────────────────
+  // ── Main Scan — Collects data then sends to Python backend ───────────────
 
   Future<void> startScan() async {
     state = state.copyWith(
@@ -210,7 +238,7 @@ class ScanNotifier extends Notifier<ScanState> {
       scanError: null,
     );
 
-    // ── Step 1: Real Mobile Usage Stats ──────────────────────
+    // ── Step 1: Collect Mobile Usage Stats ─────────────────────
     UserBehavior usage;
     try {
       final usageRepo = getIt<UsageRepository>();
@@ -234,7 +262,7 @@ class ScanNotifier extends Notifier<ScanState> {
     state = state.copyWith(scanStatus: 'fitness');
     await Future.delayed(const Duration(milliseconds: 400));
 
-    // ── Step 2: Real Fitness / Google Fit Data ───────────────
+    // ── Step 2: Collect Fitness / Google Fit Data ──────────────
     FitnessSnapshot fitness;
     try {
       final healthRepo = getIt<HealthRepository>();
@@ -259,104 +287,77 @@ class ScanNotifier extends Notifier<ScanState> {
     state = state.copyWith(scanStatus: 'analyzing');
     await Future.delayed(const Duration(milliseconds: 400));
 
-    // ── Step 3: Partial Analysis (questionnaire pending) ─────
-    final analysis = StressAnalysisEngine.analyze(
-      questionnaireScore: null,
-      screenTimeHours: usage.totalScreenMinutes / 60.0,
-      socialMediaHours: usage.socialMinutes / 60.0,
-      unlocks: usage.pickupCount,
-      lateNightUsage: usage.lateNightUsage,
-      steps: fitness.steps,
-      sleepHours: fitness.sleepHours,
+    // ── Step 3: Send ALL data to Python backend ───────────────
+    // NO local scoring. Python is the single source of truth.
+    final analysis = await StressAnalysisEngine.analyzeAndWrap(
+      socialMediaMinutes: usage.socialMinutes,
+      sleepMinutes: (fitness.sleepHours * 60).round(),
+      screenTimeMinutes: usage.totalScreenMinutes,
+      unlockCount: usage.pickupCount,
       exerciseMinutes: fitness.exerciseMinutes,
-      heartRate: fitness.heartRate,
+      restingHeartRate: fitness.heartRate,
+      lateNightUsage: usage.lateNightUsage,
+      doomScrollFlag: usage.doomScrollFlag,
+      pickupCount: usage.pickupCount,
     );
 
-    final partialResult = ScanResult(
+    final scanResult = ScanResult(
       usage: usage,
       fitness: fitness,
       analysis: analysis,
       scannedAt: DateTime.now(),
     );
 
-    // Signal questionnaire should now be shown
+    // Most recent first; keep max 50 records
+    final updatedHistory =
+        [scanResult, ...state.history].take(50).toList();
+
     state = state.copyWith(
       isScanning: false,
       hasScanned: true,
-      lastScan: partialResult,
-      scanStatus: 'questionnaire',
+      lastScan: scanResult,
+      scanStatus: analysis != null ? 'done' : '',
+      scanError: analysis == null ? 'Could not connect to AI Engine' : null,
+      history: updatedHistory,
     );
+
+    await _persistHistory(updatedHistory);
   }
 
   /// Called after user completes OR skips the questionnaire.
-  /// Finalises the scan with optional questionnaire score and saves to history.
-  /// Always runs local heuristic analysis first, then attempts to enhance the
-  /// score with the backend ML model. Backend errors are silently ignored so
-  /// the app works fully offline.
+  /// Re-sends to backend with questionnaire score included.
   Future<void> finalizeWithQuestionnaire(int? questionnaireScore) async {
     final scan = state.lastScan;
     if (scan == null) return;
 
-    // ── Step 1: local heuristic analysis ──────────────────────────
-    var analysis = StressAnalysisEngine.analyze(
-      questionnaireScore: questionnaireScore,
-      screenTimeHours: scan.usage.totalScreenMinutes / 60.0,
-      socialMediaHours: scan.usage.socialMinutes / 60.0,
-      unlocks: scan.usage.pickupCount,
-      lateNightUsage: scan.usage.lateNightUsage,
-      steps: scan.fitness.steps,
-      sleepHours: scan.fitness.sleepHours,
+    // Re-analyze with questionnaire score via backend
+    final analysis = await StressAnalysisEngine.analyzeAndWrap(
+      socialMediaMinutes: scan.usage.socialMinutes,
+      sleepMinutes: (scan.fitness.sleepHours * 60).round(),
+      screenTimeMinutes: scan.usage.totalScreenMinutes,
+      unlockCount: scan.usage.pickupCount,
       exerciseMinutes: scan.fitness.exerciseMinutes,
-      heartRate: scan.fitness.heartRate,
+      restingHeartRate: scan.fitness.heartRate,
+      lateNightUsage: scan.usage.lateNightUsage,
+      doomScrollFlag: scan.usage.doomScrollFlag,
+      pickupCount: scan.usage.pickupCount,
+      questionnaireScore: questionnaireScore,
     );
 
-    // ── Step 2: ML backend enhancement (best-effort) ───────────────
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      String deviceId = prefs.getString('device_id') ?? '';
-      if (deviceId.isEmpty) {
-        deviceId = DateTime.now().millisecondsSinceEpoch.toString();
-        await prefs.setString('device_id', deviceId);
-      }
-
-      final mlResponse = await getIt<StressApiService>().predictStress({
-        'device_id': deviceId,
-        'social_minutes': scan.usage.socialMinutes,
-        'late_night_usage': scan.usage.lateNightUsage,
-        'sleep_minutes': (scan.fitness.sleepHours * 60).round(),
-        'doom_scroll_flag': scan.usage.doomScrollFlag,
-        'pickup_count': scan.usage.pickupCount,
-        'exercise_minutes': scan.fitness.exerciseMinutes,
-        'resting_heart_rate': scan.fitness.heartRate,
-        'hrv_score': scan.fitness.heartRate > 0 ? scan.fitness.heartRate * 0.8 : 50.0, // Mocked HRV feature
-      });
-
-      final mlScore = (mlResponse['stress_score'] as num?)?.round();
-      final mlConf  = (mlResponse['confidence'] as num?)?.toDouble() ?? 1.0;
-      final ctxMsg  = mlResponse['contextual_message'] as String?;
-
-      if (mlScore != null) {
-        analysis = analysis.copyWithMl(
-          mlScore: mlScore.clamp(0, 100),
-          mlConfidence: mlConf,
-          contextualMessage: ctxMsg,
-        );
-      }
-    } catch (_) {
-      // Backend unavailable or returned unexpected data — keep local score
-    }
+    // Use new result if backend succeeded, otherwise keep the existing one
+    final finalAnalysis = analysis ?? scan.analysis;
 
     final finalResult = ScanResult(
       usage: scan.usage,
       fitness: scan.fitness,
       questionnaireScore: questionnaireScore,
-      analysis: analysis,
+      analysis: finalAnalysis,
       scannedAt: scan.scannedAt,
     );
 
     // Most recent first; keep max 50 records
     final updatedHistory =
-        [finalResult, ...state.history].take(50).toList();
+        [finalResult, ...state.history.skip(1)].take(50).toList();
 
     state = state.copyWith(
       lastScan: finalResult,

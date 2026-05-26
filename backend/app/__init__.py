@@ -15,75 +15,78 @@ limiter = Limiter(
 )
 
 def create_app(config_name='default'):
-    app = Flask(__name__)
+    flask_app = Flask(__name__)
     
     # Load configuration
     try:
-        app.config.from_object(config[config_name])
+        flask_app.config.from_object(config[config_name])
         # Validate production configuration
         if config_name == 'production':
             from app.config import Config
             Config.validate_production_config()
     except ValueError as e:
-        import logging
         logging.error(f'Configuration Error: {str(e)}')
         raise
     except KeyError:
         raise ValueError(f'Unknown configuration: {config_name}')
 
     # Setup logging
-    setup_logger(app)
+    setup_logger(flask_app)
 
     # Initialize Database
-    db.init_app(app)
-    with app.app_context():
+    db.init_app(flask_app)
+    with flask_app.app_context():
         import app.models.db_models
         db.create_all()
 
     # CORS
-    CORS(app, origins=app.config['CORS_ORIGINS'])
+    CORS(flask_app, origins=flask_app.config.get('CORS_ORIGINS', ['*']))
 
     # Rate Limiting
-    limiter.init_app(app)
+    limiter.init_app(flask_app)
 
     # Prometheus Metrics
-    metrics = PrometheusMetrics(app)
+    metrics = PrometheusMetrics(flask_app)
 
     # Swagger/OpenAPI Documentation
     try:
         from app.docs import setup_swagger
-        setup_swagger(app)
-    except ImportError:
-        app.logger.warning('Flasgger not installed - API docs unavailable')
+        setup_swagger(flask_app)
+    except Exception as e:
+        flask_app.logger.warning(f'Swagger unavailable: {e}')
 
     # Security headers middleware
-    app.after_request(add_security_headers)
+    flask_app.after_request(add_security_headers)
 
     # Register blueprints
-    from app.routes.predict import predict_bp
+    from app.routes.predict import predict_bp, load_model_assets
     from app.routes.health import health_bp
     from app.routes.feedback import feedback_bp
 
-    app.register_blueprint(predict_bp, url_prefix='/api/v1')
-    app.register_blueprint(health_bp, url_prefix='/api/v1')
-    app.register_blueprint(feedback_bp, url_prefix='/api/v1')
+    flask_app.register_blueprint(predict_bp, url_prefix='/api/v1')
+    flask_app.register_blueprint(health_bp, url_prefix='/api/v1')
+    flask_app.register_blueprint(feedback_bp, url_prefix='/api/v1')
+
+    # Pre-load ML model at startup (instant response on first request)
+    with flask_app.app_context():
+        load_model_assets()
 
     # Global error handlers
-    @app.errorhandler(400)
+    @flask_app.errorhandler(400)
     def bad_request(e):
         return jsonify({'error': 'Bad Request', 'message': str(e)}), 400
 
-    @app.errorhandler(401)
+    @flask_app.errorhandler(401)
     def unauthorized(e):
         return jsonify({'error': 'Unauthorized', 'message': 'Invalid API key'}), 401
 
-    @app.errorhandler(429)
+    @flask_app.errorhandler(429)
     def ratelimit_handler(e):
         return jsonify({'error': 'Rate Limit Exceeded', 'message': str(e)}), 429
 
-    @app.errorhandler(500)
+    @flask_app.errorhandler(500)
     def internal_error(e):
-        app.logger.error(f'Internal Server Error: {str(e)}')
+        flask_app.logger.error(f'Internal Server Error: {str(e)}')
         return jsonify({'error': 'Internal Server Error'}), 500
 
-    return app
+    return flask_app

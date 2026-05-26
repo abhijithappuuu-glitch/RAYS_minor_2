@@ -100,7 +100,7 @@ class StressRepositoryImpl implements StressRepository {
     if (unsyncedRecords.isEmpty) return;
 
     try {
-      final payloads = unsyncedRecords.map((r) => {
+      final payloads = unsyncedRecords.map((r) => <String, dynamic>{
             'score': r.stressScore,
             'risk_level': r.riskLevel,
             'confidence': r.confidence,

@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:rakshak_ai/core/theme/app_theme.dart';
 import 'package:rakshak_ai/presentation/widgets/glassmorphic_card.dart';
+import 'package:rakshak_ai/features/stress_analysis/stress_analysis_engine.dart';
 
 /// Personalized advice screen based on stress assessment result
 class AdviceScreen extends StatefulWidget {
   final int stressScore;
   final String riskLevel;
+  final StressAnalysis? analysis;
 
   const AdviceScreen({
     super.key,
     required this.stressScore,
     required this.riskLevel,
+    this.analysis,
   });
 
   @override
@@ -47,6 +50,13 @@ class _AdviceScreenState extends State<AdviceScreen> with TickerProviderStateMix
   }
 
   List<_AdviceItem> get _quickTips {
+    if (widget.analysis != null && widget.analysis!.actionableTips.isNotEmpty) {
+      return widget.analysis!.actionableTips
+          .map((tip) => _AdviceItem(Icons.auto_awesome, 'AI Recommendation', tip))
+          .toList();
+    }
+    
+    // Fallback if no backend tips
     if (widget.stressScore <= 35) {
       return [
         _AdviceItem(Icons.self_improvement, 'Maintain Balance', 'Continue your healthy habits. Regular check-ins help sustain well-being.'),
@@ -125,15 +135,26 @@ class _AdviceScreenState extends State<AdviceScreen> with TickerProviderStateMix
                     _buildHeaderCard(),
                     const SizedBox(height: 24),
 
-                    // Quick tips
+                    // Quick tips (AI Generated)
                     const Text(
-                      'Personalized Tips',
+                      'AI Actionable Tips',
                       style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 12),
                     ..._quickTips.map(_buildTipCard),
 
                     const SizedBox(height: 24),
+
+                    // Contributing Factors (AI Generated)
+                    if (widget.analysis != null && widget.analysis!.contributingFactors.isNotEmpty) ...[
+                      const Text(
+                        'Primary Stressors Detected',
+                        style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 12),
+                      ...widget.analysis!.contributingFactors.map(_buildFactorCard),
+                      const SizedBox(height: 24),
+                    ],
 
                     // Daily plan
                     const Text(
@@ -255,6 +276,45 @@ class _AdviceScreenState extends State<AdviceScreen> with TickerProviderStateMix
                   Text(item.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
                   const SizedBox(height: 4),
                   Text(item.description, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.4)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFactorCard(ContributingFactor factor) {
+    Color severityColor = AppTheme.riskLow;
+    if (factor.severity == 'high') severityColor = AppTheme.riskHigh;
+    if (factor.severity == 'medium') severityColor = AppTheme.riskMedium;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: GlassmorphicCard(
+        borderColor: severityColor.withOpacity(0.3),
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: severityColor.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(Icons.analytics_outlined, color: severityColor, size: 22),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(factor.name, style: TextStyle(color: severityColor, fontWeight: FontWeight.w600, fontSize: 15)),
+                  const SizedBox(height: 4),
+                  Text(factor.detail, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13, height: 1.4)),
                 ],
               ),
             ),
