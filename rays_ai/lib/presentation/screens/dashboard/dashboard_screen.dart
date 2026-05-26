@@ -10,6 +10,10 @@ import 'package:rakshak_ai/presentation/screens/fitness/fitness_screen.dart';
 import 'package:rakshak_ai/presentation/screens/advice/advice_screen.dart';
 import 'package:intl/intl.dart';
 import 'dart:math' as math;
+import 'package:get_it/get_it.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:rakshak_ai/data/datasources/remote/stress_api_service.dart';
+import 'package:rakshak_ai/core/di/injection.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
